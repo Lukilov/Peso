@@ -1,310 +1,370 @@
 package com.example.peso.screens
 
-
-
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.outlined.ArrowBack
+import androidx.compose.material.icons.outlined.CarRental
+import androidx.compose.material.icons.outlined.Coffee
+import androidx.compose.material.icons.outlined.LocalMall
+import androidx.compose.material.icons.outlined.PartyMode
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
-import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.example.peso.model.BudgetViewModel
-import com.example.peso.model.Period
-import java.math.BigDecimal
-import kotlin.math.max
+import com.example.peso.model.FakeData
+import java.time.LocalDate
+import java.time.YearMonth
 import kotlin.math.roundToInt
+
+// barve
+private val Bg = Color(0xFF0F0E12)
+private val Card = Color(0xFF17161B)
+private val Muted = Color(0xFF8C8A95)
+private val Accent = Color(0xFFB2A7FF)
+private val AccentSoft = Color(0x33B2A7FF)
+private val Bad = Color(0xFFE37A6D)
+private val Good = Color(0xFF6DE3A3)
+
+data class Stat(val title: String, val value: String, val badge: String? = null, val badgeTint: Color = Bad)
+data class Category(val icon: ImageVector, val name: String, val amount: Double, val deltaPct: Double? = null)
+enum class Period { DAY, WEEK, MONTH, YEAR }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun AnalysisScreen(
-    vm: BudgetViewModel,
-    onSetLimitClick: () -> Unit
-) {
-    var period by remember { mutableStateOf(Period.MONTH) }
+fun AnalysisScreen() {
+    val transactions = FakeData.transactions
+    val expenses = transactions.filter { !it.isIncome } // samo odhodki
 
-    // --- Safe VM reads (brez klicev neobstoječih funkcij) ---
-    val total: BigDecimal? = runCatching { vm.totalFor(period) }.getOrNull()
-    val income: BigDecimal? = runCatching { vm.incomeFor(period) }.getOrNull()
-    val expense: BigDecimal? = runCatching { vm.expenseFor(period) }.getOrNull()
-    val limit: BigDecimal? = runCatching { vm.monthlyLimit }.getOrNull() // property, ne funkcija
-    val remaining: BigDecimal? = runCatching { vm.remainingAgainstLimit(period) }.getOrNull()
-    val progress: Float = (runCatching { vm.budgetProgress(period) }.getOrNull() ?: 0f).coerceIn(0f, 1f)
+    val now = LocalDate.now()
+    val ym = YearMonth.of(now.year, now.month)
+    val limitGoal = 800.0
 
-    // Normaliziraj serijo na List<Float>
-    val points: List<Float> = runCatching { vm.seriesFor(period) }.getOrNull()
-        .let { series: Any? ->
-            when (series) {
-                is List<*> -> series.mapNotNull { item ->
-                    when (item) {
-                        is BigDecimal -> item.toFloat()
-                        is Number -> item.toFloat()
-                        is Pair<*, *> -> {
-                            val y = item.second
-                            when (y) {
-                                is BigDecimal -> y.toFloat()
-                                is Number -> y.toFloat()
-                                else -> null
-                            }
-                        }
-                        else -> null
-                    }
-                }
-                else -> emptyList()
-            }
+    val total = expenses.sumOf { it.amount.abs().toDouble() }
+    val days = ym.lengthOfMonth()
+
+    // poraba po dneh tekočega meseca
+    val byDay = expenses
+        .filter { it.date.year == now.year && it.date.month == now.month }
+        .groupBy { it.date.dayOfMonth }
+        .mapValues { (_, list) -> list.sumOf { it.amount.abs().toDouble() } }
+
+    val monthPoints = (1..days).map { d -> byDay[d] ?: 0.0 }
+    val average = if (days > 0) monthPoints.sum() / days else 0.0
+
+    // kategorije (varen handling za null/prazne tipe)
+    val categories = expenses
+        .groupBy { ((it.type) ?: "").ifBlank { "Drugo" } }
+        .map { (type, list) ->
+            val sum = list.sumOf { it.amount.abs().toDouble() }
+            Category(
+                icon = pickIcon(type),
+                name = mapTypeToName(type),
+                amount = sum
+            )
         }
+        .filter { it.name in listOf("Hrana", "Pijača", "Prevoz", "Zabava", "Drugo") } // omeji na specifične kategorije
+        .sortedByDescending { it.amount }
+
+    // --- UI izračuni ---
+    var period by remember { mutableStateOf(Period.MONTH) }
+    val spent = categories.sumOf { it.amount }
+    val progress = (spent / limitGoal).coerceIn(0.0, 1.0)
+    val delta = total - average
+    val deltaPct = if (average != 0.0) (delta / average * 100).roundToInt() else 0
+
+    val hitDateText = "Poraba: €${format2(total)} / cilj €${format2(limitGoal)}"
+
+    val insights = listOf(
+        "Hrana predstavlja ${((categories.firstOrNull()?.amount ?: 0.0) / (spent.takeIf { it > 0 } ?: 1.0) * 100).roundToInt()} % vseh stroškov.",
+        "Δ proti povprečju: ${if (delta >= 0) "+" else ""}${format2(delta)} / $deltaPct %.",
+        "Poraba za ta mesec temelji na ${expenses.size} transakcijah."
+    )
 
     Scaffold(
-        topBar = { CenterAlignedTopAppBar(title = { Text("Analiza porabe") }) }
-    ) { padding ->
-        Column(
-            Modifier
+        containerColor = Bg,
+        topBar = {
+            CenterAlignedTopAppBar(
+                title = { Text("Analiza", color = Color.White, fontSize = 22.sp) },
+                navigationIcon = {
+                    IconButton(onClick = { /* back */ }) {
+                        Icon(Icons.AutoMirrored.Outlined.ArrowBack, contentDescription = null, tint = Color.White)
+                    }
+                },
+                colors = TopAppBarDefaults.centerAlignedTopAppBarColors(containerColor = Bg)
+            )
+        }
+    ) { inner ->
+        LazyColumn(
+            modifier = Modifier
                 .fillMaxSize()
-                .padding(padding)
-                .padding(16.dp),
+                .padding(inner),
+            contentPadding = PaddingValues(16.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            PeriodSelector(selected = period, onSelect = { period = it })
+            item { PeriodChips(selected = period, onSelect = { period = it }) }
 
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                StatCard("Skupaj", total.fmt(), modifier = Modifier.weight(1f))
-                StatCard("Prihodki", income.fmt(), positive = true, modifier = Modifier.weight(1f))
-                StatCard("Odhodki", expense.negFmt(), positive = false, modifier = Modifier.weight(1f))
-            }
-
-            DashboardCard {
-                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Text("Limit", style = MaterialTheme.typography.titleMedium)
-                    Row(
-                        Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Column {
-                            Text("Mesečni limit", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            Text(limit.fmt(), style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
-                        }
-                        Column(horizontalAlignment = Alignment.End) {
-                            Text("Preostanek", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            val rem = remaining ?: BigDecimal.ZERO
-                            val over = rem < BigDecimal.ZERO
-                            SmallPill(
-                                text = if (over) "Presežek ${rem.abs().fmt()}" else rem.fmt(),
-                                positive = !over
-                            )
-                        }
-                    }
-                    BudgetBar(progress = progress)
-                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                        Text("${(progress * 100).roundToInt()}% porabe", fontSize = 12.sp)
-                        Text("Cilj: ${limit.fmt()}", fontSize = 12.sp)
-                    }
+            item {
+                Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
+                    StatCard(Stat("Skupaj", "€ ${format2(total)}"), modifier = Modifier.weight(1f))
+                    StatCard(
+                        Stat(
+                            "Povprečje", "€ ${format2(average)}",
+                            badge = if (delta <= 0) "Dobro" else "Slabše",
+                            badgeTint = if (delta <= 0) Good else Bad
+                        ),
+                        modifier = Modifier.weight(1f)
+                    )
+                    StatCard(Stat("Δ", "${if (delta >= 0) "+" else ""}${format2(delta)} / $deltaPct %"), modifier = Modifier.weight(1f))
                 }
             }
 
-            DashboardCard {
-                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("Trend", style = MaterialTheme.typography.titleMedium)
-                    Sparkline(
-                        points = points,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(96.dp)
-                    )
-                    val sum = points.fold(BigDecimal.ZERO) { acc, f -> acc + f.toBigDecimalSafe() }
-                    Text(
-                        "Skupaj v obdobju: ${sum.fmt()}",
-                        fontSize = 12.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
+            item {
+                LimitCard(
+                    title = "Limit",
+                    subtitle = "${(progress * 100).roundToInt()} % porabe",
+                    points = monthPoints,
+                    goal = limitGoal,
+                    spent = spent,
+                    projectionText = hitDateText
+                )
             }
 
-            OutlinedButton(onClick = onSetLimitClick, modifier = Modifier.align(Alignment.End)) {
-                Text("Nastavi/uredi limit")
-            }
+            item { Text("Kategorije", color = Color.White, fontSize = 18.sp) }
+            items(categories) { cat -> CategoryRow(cat, total = spent) }
+
+            item { InsightsCard(insights) }
+            item { Spacer(Modifier.height(24.dp)) }
         }
     }
 }
 
-/* ------------------------- UI helperji ------------------------- */
+/* ---------------- helperji za ikone/imenovanja (varni na null) ---------------- */
+
+private fun pickIcon(type: String?): ImageVector = when ((type?.lowercase() ?: "drugo")) {
+    "food", "hrana", "groceries", "shopping" -> Icons.Outlined.LocalMall
+    "drink", "coffee", "kava", "pijača"      -> Icons.Outlined.Coffee
+    "transport", "prevoz", "fuel", "gorivo"  -> Icons.Outlined.CarRental
+    "entertainment", "zabava", "party"       -> Icons.Outlined.PartyMode
+    else                                     -> Icons.Outlined.LocalMall
+}
+
+private fun mapTypeToName(type: String?): String = when ((type?.lowercase() ?: "drugo")) {
+    "food", "groceries", "shopping", "hrana" -> "Hrana"
+    "drink", "coffee", "kava", "pijača"      -> "Pijača"
+    "transport", "fuel", "gorivo", "prevoz"  -> "Prevoz"
+    "entertainment", "party", "zabava"       -> "Zabava"
+    "drugo"                                  -> "Drugo"
+    else                                     -> type!!.replaceFirstChar { it.uppercase() }
+}
+
+/* ---------------- UI deli (nerespremljeni) ---------------- */
 
 @Composable
-private fun PeriodSelector(
+private fun PeriodChips(
     selected: Period,
     onSelect: (Period) -> Unit
 ) {
-    val options = listOf(Period.DAY, Period.WEEK, Period.MONTH, Period.YEAR)
+    val items = listOf(
+        Period.DAY to "Dan",
+        Period.WEEK to "Teden",
+        Period.MONTH to "Mesec",
+        Period.YEAR to "Leto"
+    )
+    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        items.forEach { (p, label) ->
+            val active = p == selected
+            Box(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(24.dp))
+                    .background(if (active) Accent else Card)
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null
+                    ) { onSelect(p) }
+                    .padding(horizontal = 16.dp, vertical = 10.dp)
+            ) { Text(label, color = if (active) Bg else Color.White) }
+        }
+    }
+}
 
-    Row(
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        for (p in options) {
-            val isSel = p == selected
-            if (isSel) {
-                Button(onClick = { onSelect(p) }) {
-                    Text(p.label)
-                }
-            } else {
-                OutlinedButton(onClick = { onSelect(p) }) {
-                    Text(p.label)
-                }
+@Composable
+private fun StatCard(stat: Stat, modifier: Modifier = Modifier) {
+    Surface(shape = RoundedCornerShape(20.dp), color = Card, modifier = modifier) {
+        Column(Modifier.padding(16.dp)) {
+            Text(stat.title, color = Muted, fontSize = 13.sp)
+            Spacer(Modifier.height(10.dp))
+            Text(stat.value, color = Color.White)
+            stat.badge?.let {
+                Spacer(Modifier.height(8.dp))
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(stat.badgeTint.copy(alpha = 0.18f))
+                        .padding(horizontal = 10.dp, vertical = 4.dp)
+                ) { Text(it, color = stat.badgeTint, fontSize = 12.sp) }
             }
         }
     }
 }
 
-
-
 @Composable
-private fun StatCard(
+private fun LimitCard(
     title: String,
-    value: String,
-    positive: Boolean? = null,
-    modifier: Modifier = Modifier
+    subtitle: String,
+    points: List<Double>,
+    goal: Double,
+    spent: Double,
+    projectionText: String
 ) {
-    DashboardCard(modifier) {
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            Text(title, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            Text(value, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
-            if (positive != null) {
-                SmallPill(text = if (positive) "Dobro" else "Slabše", positive = positive)
+    Surface(shape = RoundedCornerShape(20.dp), color = Card) {
+        Column(Modifier.padding(16.dp)) {
+            Text(title, color = Color.White)
+            Spacer(Modifier.height(6.dp))
+            Text(subtitle, color = Muted, fontSize = 13.sp)
+            Spacer(Modifier.height(12.dp))
+            TrendChart(points, 110.dp, 3.dp)
+            Spacer(Modifier.height(10.dp))
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(6.dp)
+                    .clip(RoundedCornerShape(6.dp))
+                    .background(AccentSoft)
+            ) {
+                val pct = (spent / goal).coerceIn(0.0, 1.0).toFloat()
+                Box(
+                    modifier = Modifier
+                        .fillMaxHeight()
+                        .fillMaxWidth(pct)
+                        .background(Accent)
+                )
             }
+            Spacer(Modifier.height(10.dp))
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                Text("Cilj: €${format2(goal)}", color = Muted, fontSize = 13.sp)
+                Text("€ ${format2(spent)}", color = Color.White)
+            }
+            Spacer(Modifier.height(6.dp))
+            Text(projectionText, color = Muted, fontSize = 12.sp)
         }
     }
 }
 
 @Composable
-private fun DashboardCard(
-    modifier: Modifier = Modifier,
-    content: @Composable () -> Unit
+private fun TrendChart(
+    points: List<Double>,
+    height: Dp,
+    stroke: Dp,
+    goalLine: Double? = null
 ) {
-    Surface(
-        modifier = modifier.fillMaxWidth(),
-        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
-        shape = RoundedCornerShape(16.dp)
-    ) { content() }
-}
+    val data = if (points.isEmpty()) listOf(0.0) else points
+    val min = data.minOrNull()!!
+    val max = data.maxOrNull()!!
+    val range = (max - min).takeIf { it != 0.0 } ?: 1.0
 
-@Composable
-private fun SmallPill(
-    text: String,
-    positive: Boolean
-) {
-    val bg = if (positive) MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
-    else MaterialTheme.colorScheme.error.copy(alpha = 0.12f)
-    val fg = if (positive) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error
-
-    Box(
-        modifier = Modifier
-            .background(bg, RoundedCornerShape(999.dp))
-            .padding(horizontal = 10.dp, vertical = 6.dp)
-    ) {
-        Text(text, color = fg, fontSize = 12.sp, fontWeight = FontWeight.Medium)
-    }
-}
-
-@Composable
-private fun BudgetBar(progress: Float) {
-    val clamped = progress.coerceIn(0f, 1f)
     Box(
         modifier = Modifier
             .fillMaxWidth()
-            .height(10.dp)
-            .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(999.dp))
+            .height(height)
+            .clip(RoundedCornerShape(14.dp))
+            .background(Color(0xFF1E1D23))
+            .padding(12.dp)
     ) {
-        Box(
-            modifier = Modifier
-                .fillMaxWidth(clamped)
-                .height(10.dp)
-                .background(MaterialTheme.colorScheme.primary, RoundedCornerShape(999.dp))
-        )
+        Canvas(Modifier.fillMaxSize()) {
+            val w = size.width
+            val h = size.height
+            val step = w / (data.size - 1).coerceAtLeast(1)
+
+            // fill
+            val path = Path()
+            data.forEachIndexed { i, v ->
+                val x = i * step
+                val y = h - ((v - min) / range).toFloat() * h
+                if (i == 0) path.moveTo(x, y) else path.lineTo(x, y)
+            }
+            path.lineTo(w, h); path.lineTo(0f, h); path.close()
+            drawPath(path, AccentSoft)
+
+            // goal line (opcijsko)
+            goalLine?.let { g ->
+                val gy = h - ((g - min) / range).toFloat() * h
+                drawLine(Color(0x55FFFFFF), start = Offset(0f, gy), end = Offset(w, gy), strokeWidth = 2f)
+            }
+
+            // line + markers
+            var prev: Offset? = null
+            data.forEachIndexed { i, v ->
+                val x = i * step
+                val y = h - ((v - min) / range).toFloat() * h
+                val cur = Offset(x, y)
+                prev?.let {
+                    drawLine(color = Accent, start = it, end = cur, strokeWidth = stroke.toPx(), cap = StrokeCap.Round)
+                }
+                prev = cur
+                drawCircle(Accent, radius = 4f, center = cur)
+            }
+        }
     }
 }
 
 @Composable
-private fun Sparkline(
-    points: List<Float>,
-    modifier: Modifier = Modifier
-) {
-    val colorPrimary = MaterialTheme.colorScheme.primary
-    val colorFill = colorPrimary.copy(alpha = 0.12f)
-    val colorText = MaterialTheme.colorScheme.onSurfaceVariant
-
-    if (points.isEmpty()) {
-        Box(modifier, contentAlignment = Alignment.Center) {
-            Text("Ni podatkov", color = colorText, fontSize = 12.sp)
-        }
-        return
-    }
-
-    Canvas(modifier = modifier) {
-        val w = size.width
-        val h = size.height
-
-        val minY = points.minOrNull() ?: 0f
-        val maxY = points.maxOrNull() ?: 1f
-        val spanY = max(1e-3f, maxY - minY)
-        val stepX = if (points.size > 1) w / (points.size - 1) else w
-
-        val path = Path()
-        points.forEachIndexed { idx, y ->
-            val x = idx * stepX
-            val normY = (y - minY) / spanY
-            val yy = h - normY * h
-            if (idx == 0) path.moveTo(x, yy) else path.lineTo(x, yy)
-        }
-        path.lineTo(w, h)
-        path.lineTo(0f, h)
-        path.close()
-
-        // Uporabi barve, shranjene zunaj composable konteksta
-        drawPath(path = path, color = colorFill)
-
-        var prev: Offset? = null
-        points.forEachIndexed { idx, y ->
-            val x = idx * stepX
-            val normY = (y - minY) / spanY
-            val yy = h - normY * h
-            val curr = Offset(x, yy)
-            prev?.let {
-                drawLine(
-                    color = colorPrimary,
-                    start = it,
-                    end = curr,
-                    strokeWidth = 3f
+private fun CategoryRow(cat: Category, total: Double? = null) {
+    val share = total?.takeIf { it > 0 }?.let { cat.amount / it } ?: 0.0
+    Surface(shape = RoundedCornerShape(18.dp), color = Card, modifier = Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(horizontal = 14.dp, vertical = 12.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(
+                    Modifier.size(38.dp).clip(CircleShape).background(Color(0xFF222129)),
+                    contentAlignment = Alignment.Center
+                ) { Icon(cat.icon, contentDescription = cat.name, tint = Color(0xFFB9B7C3)) }
+                Spacer(Modifier.width(12.dp))
+                Text(cat.name, color = Color.White, modifier = Modifier.weight(1f))
+                Text("€ ${format2(cat.amount)}", color = Color.White)
+            }
+            Spacer(Modifier.height(8.dp))
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .height(5.dp)
+                    .clip(RoundedCornerShape(5.dp))
+                    .background(AccentSoft)
+            ) {
+                Box(
+                    Modifier
+                        .fillMaxHeight()
+                        .fillMaxWidth(share.toFloat().coerceIn(0f, 1f))
+                        .background(Accent)
                 )
             }
-            prev = curr
         }
     }
 }
 
-
-/* ------------------------- util/formatting ------------------------- */
-
-private fun BigDecimal?.fmt(): String =
-    if (this == null) "—" else "€ " + this.toPlainString()
-
-private fun BigDecimal?.negFmt(): String =
-    if (this == null) "—" else "€ -" + this.abs().toPlainString()
-
-private fun Float.toBigDecimalSafe(): BigDecimal =
-    try { this.toString().toBigDecimal() } catch (_: Throwable) { BigDecimal.ZERO }
-
-/* ------------------------- Period labels ------------------------- */
-
-val Period.label: String
-    get() = when (this) {
-        Period.DAY -> "Dan"
-        Period.WEEK -> "Teden"
-        Period.MONTH -> "Mesec"
-        Period.YEAR -> "Leto"
+@Composable
+private fun InsightsCard(lines: List<String>) {
+    Surface(shape = RoundedCornerShape(18.dp), color = Card, modifier = Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("Vpogledi", color = Color.White)
+            lines.forEach { Text("• $it", color = Muted, fontSize = 13.sp) }
+        }
     }
+}
+
+private fun format2(x: Double): String = "%,.2f".format(x)

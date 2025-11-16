@@ -9,7 +9,17 @@ data class Transaction(
     val date: LocalDate,
     val isIncome: Boolean,
     val merchant: String? = null,
-    val note: String? = null,
-    val type: String? = null,
-    val ts: Long = System.currentTimeMillis()
+    val type: String? = null, // tukaj se lahko uporabi kategorija
+    val category: String = "Drugo" // privzeta kategorija
 )
+
+
+fun Transaction.isIn(period: Period): Boolean {
+    val (start, end) = when (period) {
+        Period.DAY -> LocalDate.now() to LocalDate.now()
+        Period.WEEK -> LocalDate.now().minusDays(6) to LocalDate.now()
+        Period.MONTH -> LocalDate.now().withDayOfMonth(1) to LocalDate.now()
+        Period.YEAR -> LocalDate.now().withDayOfYear(1) to LocalDate.now()
+    }
+    return date in start..end
+}
