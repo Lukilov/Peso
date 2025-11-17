@@ -68,9 +68,13 @@ fun TransactionCard(tx: Transaction) {
                 fontSize = 16.sp
             )
 
+            val isExpense = !tx.isIncome
+            val amountAbs: BigDecimal = tx.amount.abs()
+
             Text(
-                text = "${tx.amount.toPlainString()} €",
-                color = if (tx.amount < BigDecimal.ZERO) Color.Red else Color.Green,
+                text = (if (isExpense) "-" else "+") +
+                        amountAbs.toPlainString() + " €",
+                color = if (isExpense) Color.Red else Color.Green,
                 fontSize = 16.sp
             )
         }

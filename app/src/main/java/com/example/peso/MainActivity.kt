@@ -16,7 +16,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
-import androidx.compose.foundation.layout.padding // <-- DODANO
+import androidx.compose.foundation.layout.padding
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
@@ -44,6 +44,9 @@ class MainActivity : ComponentActivity() {
                 val navController = rememberNavController()
                 val backStackEntry by navController.currentBackStackEntryAsState()
                 val currentRoute = backStackEntry?.destination?.route
+
+                // EN SAM ViewModel za cel app
+                val vm: BudgetViewModel = viewModel()
 
                 Scaffold(
                     bottomBar = {
@@ -105,18 +108,17 @@ class MainActivity : ComponentActivity() {
                         modifier = Modifier.padding(innerPadding)
                     ) {
                         composable(ROUTE_DASHBOARD) {
-                            val vm = viewModel<BudgetViewModel>()
                             DashboardScreen(vm = vm)
                         }
                         composable(ROUTE_TRANSACTIONS) {
-                            val vm = viewModel<BudgetViewModel>()
                             TransactionsScreen(vm = vm)
                         }
                         composable(ROUTE_ANALYSIS) {
-                            val vm = viewModel<BudgetViewModel>()
-                            AnalysisScreen()
+                            AnalysisScreen(vm = vm)
                         }
-                        composable(ROUTE_SETTINGS) { SettingsScreen() }
+                        composable(ROUTE_SETTINGS) {
+                            SettingsScreen(vm = vm)
+                        }
                     }
                 }
             }

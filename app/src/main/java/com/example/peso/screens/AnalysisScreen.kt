@@ -29,6 +29,8 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.peso.model.FakeData
+import com.example.peso.model.BudgetViewModel
+import java.math.BigDecimal
 import java.time.LocalDate
 import java.time.YearMonth
 import kotlin.math.roundToInt
@@ -42,34 +44,78 @@ private val AccentSoft = Color(0x33B2A7FF)
 private val Bad = Color(0xFFE37A6D)
 private val Good = Color(0xFF6DE3A3)
 
-data class Stat(val title: String, val value: String, val badge: String? = null, val badgeTint: Color = Bad)
-data class Category(val icon: ImageVector, val name: String, val amount: Double, val deltaPct: Double? = null)
+data class Stat(
+    val title: String,
+    val value: String,
+    val badge: String? = null,
+    val badgeTint: Color = Bad
+)
+
+data class Category(
+    val icon: ImageVector,
+    val name: String,
+    val amount: Double,
+    val deltaPct: Double? = null
+)
+
 enum class Period { DAY, WEEK, MONTH, YEAR }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun AnalysisScreen() {
+fun AnalysisScreen(vm: BudgetViewModel) {
     val transactions = FakeData.transactions
     val expenses = transactions.filter { !it.isIncome } // samo odhodki
 
+    var period by remember { mutableStateOf(Period.MONTH) }
+
     val now = LocalDate.now()
     val ym = YearMonth.of(now.year, now.month)
-    val limitGoal = 800.0
+    val daysInMonth = ym.lengthOfMonth()
 
-    val total = expenses.sumOf { it.amount.abs().toDouble() }
-    val days = ym.lengthOfMonth()
+    // določi časovno obdobje glede na izbran period
+    val (startDate, endDate) = when (period) {
+        Period.DAY -> now to now
+        Period.WEEK -> {
+            val start = now.minusDays((now.dayOfWeek.value - 1).toLong()) // ponedeljek
+            val end = start.plusDays(6)
+            start to end
+        }
+        Period.MONTH -> {
+            val start = ym.atDay(1)
+            val end = ym.atEndOfMonth()
+            start to end
+        }
+        Period.YEAR -> {
+            val start = LocalDate.of(now.year, 1, 1)
+            val end = LocalDate.of(now.year, 12, 31)
+            start to end
+        }
+    }
 
-    // poraba po dneh tekočega meseca
-    val byDay = expenses
-        .filter { it.date.year == now.year && it.date.month == now.month }
-        .groupBy { it.date.dayOfMonth }
+    val periodExpenses = expenses.filter { it.date in startDate..endDate }
+
+    // vsi dnevi v izbranem obdobju
+    val daysInRange: List<LocalDate> = remember(startDate, endDate) {
+        generateSequence(startDate) { d ->
+            if (d.isBefore(endDate)) d.plusDays(1) else null
+        }.toList()
+    }
+
+    // poraba po dnevih v izbranem obdobju
+    val byDay: Map<LocalDate, Double> = periodExpenses
+        .groupBy { it.date }
         .mapValues { (_, list) -> list.sumOf { it.amount.abs().toDouble() } }
 
-    val monthPoints = (1..days).map { d -> byDay[d] ?: 0.0 }
-    val average = if (days > 0) monthPoints.sum() / days else 0.0
+    val points: List<Double> =
+        if (daysInRange.isEmpty()) listOf(0.0)
+        else daysInRange.map { d -> byDay[d] ?: 0.0 }
 
-    // kategorije (varen handling za null/prazne tipe)
-    val categories = expenses
+    val daysCount = daysInRange.size
+    val total = periodExpenses.sumOf { it.amount.abs().toDouble() }
+    val average = if (daysCount > 0) points.sum() / daysCount else 0.0
+
+    // kategorije (varen handling za null/prazne tipe) – samo iz izbranega obdobja
+    val categories = periodExpenses
         .groupBy { ((it.type) ?: "").ifBlank { "Drugo" } }
         .map { (type, list) ->
             val sum = list.sumOf { it.amount.abs().toDouble() }
@@ -79,22 +125,37 @@ fun AnalysisScreen() {
                 amount = sum
             )
         }
-        .filter { it.name in listOf("Hrana", "Pijača", "Prevoz", "Zabava", "Drugo") } // omeji na specifične kategorije
+        .filter { it.name in listOf("Hrana", "Pijača", "Prevoz", "Zabava", "Drugo") }
         .sortedByDescending { it.amount }
 
-    // --- UI izračuni ---
-    var period by remember { mutableStateOf(Period.MONTH) }
+    // --- LIMIT iz nastavitev ---
+    val baseMonthlyLimit = (vm.monthlyLimit ?: BigDecimal("800.00")).toDouble()
+
+    val limitGoal: Double = when (period) {
+        Period.DAY -> baseMonthlyLimit / daysInMonth
+        Period.WEEK -> baseMonthlyLimit / daysInMonth * 7.0
+        Period.MONTH -> baseMonthlyLimit
+        Period.YEAR -> baseMonthlyLimit * 12.0
+    }
+
     val spent = categories.sumOf { it.amount }
-    val progress = (spent / limitGoal).coerceIn(0.0, 1.0)
+    val progress = if (limitGoal > 0.0) (spent / limitGoal).coerceIn(0.0, 1.0) else 0.0
     val delta = total - average
     val deltaPct = if (average != 0.0) (delta / average * 100).roundToInt() else 0
 
     val hitDateText = "Poraba: €${format2(total)} / cilj €${format2(limitGoal)}"
 
+    val periodLabel = when (period) {
+        Period.DAY -> "izbran dan"
+        Period.WEEK -> "izbran teden"
+        Period.MONTH -> "izbran mesec"
+        Period.YEAR -> "izbrano leto"
+    }
+
     val insights = listOf(
         "Hrana predstavlja ${((categories.firstOrNull()?.amount ?: 0.0) / (spent.takeIf { it > 0 } ?: 1.0) * 100).roundToInt()} % vseh stroškov.",
-        "Δ proti povprečju: ${if (delta >= 0) "+" else ""}${format2(delta)} / $deltaPct %.",
-        "Poraba za ta mesec temelji na ${expenses.size} transakcijah."
+        "Razlika do povprečja: ${if (delta >= 0) "+" else ""}${format2(delta)} / $deltaPct %.",
+        "Poraba za $periodLabel temelji na ${periodExpenses.size} transakcijah."
     )
 
     Scaffold(
@@ -104,7 +165,11 @@ fun AnalysisScreen() {
                 title = { Text("Analiza", color = Color.White, fontSize = 22.sp) },
                 navigationIcon = {
                     IconButton(onClick = { /* back */ }) {
-                        Icon(Icons.AutoMirrored.Outlined.ArrowBack, contentDescription = null, tint = Color.White)
+                        Icon(
+                            Icons.AutoMirrored.Outlined.ArrowBack,
+                            contentDescription = null,
+                            tint = Color.White
+                        )
                     }
                 },
                 colors = TopAppBarDefaults.centerAlignedTopAppBarColors(containerColor = Bg)
@@ -118,20 +183,38 @@ fun AnalysisScreen() {
             contentPadding = PaddingValues(16.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            item { PeriodChips(selected = period, onSelect = { period = it }) }
+            item {
+                PeriodChips(
+                    selected = period,
+                    onSelect = { period = it }
+                )
+            }
 
             item {
-                Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
-                    StatCard(Stat("Skupaj", "€ ${format2(total)}"), modifier = Modifier.weight(1f))
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    StatCard(
+                        Stat("Skupaj", "€ ${format2(total)}"),
+                        modifier = Modifier.weight(1f)
+                    )
                     StatCard(
                         Stat(
-                            "Povprečje", "€ ${format2(average)}",
+                            "Povprečje",
+                            "€ ${format2(average)}",
                             badge = if (delta <= 0) "Dobro" else "Slabše",
                             badgeTint = if (delta <= 0) Good else Bad
                         ),
                         modifier = Modifier.weight(1f)
                     )
-                    StatCard(Stat("Δ", "${if (delta >= 0) "+" else ""}${format2(delta)} / $deltaPct %"), modifier = Modifier.weight(1f))
+                    StatCard(
+                        Stat(
+                            "Razlika do povprečja",
+                            "${if (delta >= 0) "+" else ""}${format2(delta)} / $deltaPct %"
+                        ),
+                        modifier = Modifier.weight(1f)
+                    )
                 }
             }
 
@@ -139,7 +222,7 @@ fun AnalysisScreen() {
                 LimitCard(
                     title = "Limit",
                     subtitle = "${(progress * 100).roundToInt()} % porabe",
-                    points = monthPoints,
+                    points = points,
                     goal = limitGoal,
                     spent = spent,
                     projectionText = hitDateText
@@ -147,7 +230,10 @@ fun AnalysisScreen() {
             }
 
             item { Text("Kategorije", color = Color.White, fontSize = 18.sp) }
-            items(categories) { cat -> CategoryRow(cat, total = spent) }
+
+            items(categories) { cat ->
+                CategoryRow(cat, total = spent)
+            }
 
             item { InsightsCard(insights) }
             item { Spacer(Modifier.height(24.dp)) }
@@ -174,7 +260,7 @@ private fun mapTypeToName(type: String?): String = when ((type?.lowercase() ?: "
     else                                     -> type!!.replaceFirstChar { it.uppercase() }
 }
 
-/* ---------------- UI deli (nerespremljeni) ---------------- */
+/* ---------------- UI deli ---------------- */
 
 @Composable
 private fun PeriodChips(
@@ -199,7 +285,9 @@ private fun PeriodChips(
                         indication = null
                     ) { onSelect(p) }
                     .padding(horizontal = 16.dp, vertical = 10.dp)
-            ) { Text(label, color = if (active) Bg else Color.White) }
+            ) {
+                Text(label, color = if (active) Bg else Color.White)
+            }
         }
     }
 }
@@ -218,7 +306,9 @@ private fun StatCard(stat: Stat, modifier: Modifier = Modifier) {
                         .clip(RoundedCornerShape(14.dp))
                         .background(stat.badgeTint.copy(alpha = 0.18f))
                         .padding(horizontal = 10.dp, vertical = 4.dp)
-                ) { Text(it, color = stat.badgeTint, fontSize = 12.sp) }
+                ) {
+                    Text(it, color = stat.badgeTint, fontSize = 12.sp)
+                }
             }
         }
     }
@@ -248,7 +338,7 @@ private fun LimitCard(
                     .clip(RoundedCornerShape(6.dp))
                     .background(AccentSoft)
             ) {
-                val pct = (spent / goal).coerceIn(0.0, 1.0).toFloat()
+                val pct = if (goal > 0.0) (spent / goal).coerceIn(0.0, 1.0).toFloat() else 0f
                 Box(
                     modifier = Modifier
                         .fillMaxHeight()
@@ -257,7 +347,10 @@ private fun LimitCard(
                 )
             }
             Spacer(Modifier.height(10.dp))
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
                 Text("Cilj: €${format2(goal)}", color = Muted, fontSize = 13.sp)
                 Text("€ ${format2(spent)}", color = Color.White)
             }
@@ -299,13 +392,20 @@ private fun TrendChart(
                 val y = h - ((v - min) / range).toFloat() * h
                 if (i == 0) path.moveTo(x, y) else path.lineTo(x, y)
             }
-            path.lineTo(w, h); path.lineTo(0f, h); path.close()
+            path.lineTo(w, h)
+            path.lineTo(0f, h)
+            path.close()
             drawPath(path, AccentSoft)
 
             // goal line (opcijsko)
             goalLine?.let { g ->
                 val gy = h - ((g - min) / range).toFloat() * h
-                drawLine(Color(0x55FFFFFF), start = Offset(0f, gy), end = Offset(w, gy), strokeWidth = 2f)
+                drawLine(
+                    Color(0x55FFFFFF),
+                    start = Offset(0f, gy),
+                    end = Offset(w, gy),
+                    strokeWidth = 2f
+                )
             }
 
             // line + markers
@@ -315,7 +415,13 @@ private fun TrendChart(
                 val y = h - ((v - min) / range).toFloat() * h
                 val cur = Offset(x, y)
                 prev?.let {
-                    drawLine(color = Accent, start = it, end = cur, strokeWidth = stroke.toPx(), cap = StrokeCap.Round)
+                    drawLine(
+                        color = Accent,
+                        start = it,
+                        end = cur,
+                        strokeWidth = stroke.toPx(),
+                        cap = StrokeCap.Round
+                    )
                 }
                 prev = cur
                 drawCircle(Accent, radius = 4f, center = cur)
@@ -327,13 +433,22 @@ private fun TrendChart(
 @Composable
 private fun CategoryRow(cat: Category, total: Double? = null) {
     val share = total?.takeIf { it > 0 }?.let { cat.amount / it } ?: 0.0
-    Surface(shape = RoundedCornerShape(18.dp), color = Card, modifier = Modifier.fillMaxWidth()) {
+    Surface(
+        shape = RoundedCornerShape(18.dp),
+        color = Card,
+        modifier = Modifier.fillMaxWidth()
+    ) {
         Column(Modifier.padding(horizontal = 14.dp, vertical = 12.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Box(
-                    Modifier.size(38.dp).clip(CircleShape).background(Color(0xFF222129)),
+                    Modifier
+                        .size(38.dp)
+                        .clip(CircleShape)
+                        .background(Color(0xFF222129)),
                     contentAlignment = Alignment.Center
-                ) { Icon(cat.icon, contentDescription = cat.name, tint = Color(0xFFB9B7C3)) }
+                ) {
+                    Icon(cat.icon, contentDescription = cat.name, tint = Color(0xFFB9B7C3))
+                }
                 Spacer(Modifier.width(12.dp))
                 Text(cat.name, color = Color.White, modifier = Modifier.weight(1f))
                 Text("€ ${format2(cat.amount)}", color = Color.White)
@@ -359,8 +474,15 @@ private fun CategoryRow(cat: Category, total: Double? = null) {
 
 @Composable
 private fun InsightsCard(lines: List<String>) {
-    Surface(shape = RoundedCornerShape(18.dp), color = Card, modifier = Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+    Surface(
+        shape = RoundedCornerShape(18.dp),
+        color = Card,
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(
+            Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
             Text("Vpogledi", color = Color.White)
             lines.forEach { Text("• $it", color = Muted, fontSize = 13.sp) }
         }
